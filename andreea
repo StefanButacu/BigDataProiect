@@ -1,0 +1,142 @@
+import contextlib
+import unittest
+import wave
+
+import gradio as gr
+from pydub import AudioSegment
+from transformers import pipeline
+import numpy as np
+import sounddevice as sd
+import matplotlib.pyplot as plt
+from transformers import pipeline
+import time
+import webrtcvad
+
+
+def segments(audio):
+    duration = 5
+    countdown = 3
+    print("Start speaking after the recording begins.")
+
+    for i in range(countdown, 0, -1):
+        print(f"Recording will start in {i} seconds...")
+        time.sleep(1)
+
+    print('Speak!')
+    # Start the recording
+    myrecording = sd.rec(int(duration * 44100), samplerate=44100, channels=1)
+    sd.wait()
+
+    # Convert the recording to mono, float32 and normalize it
+    myrecording = myrecording[:, 0]
+    myrecording = myrecording.astype(np.float32)
+    myrecording /= np.max(np.abs(myrecording))
+
+    # Display the audio waveform
+    plt.figure(figsize=(10, 4))
+    plt.plot(myrecording)
+    plt.title('Audio Waveform')
+    plt.xlabel('Time')
+    plt.ylabel('Amplitude')
+    plt.grid(True)
+    plt.show()
+
+    # Perform ASR on the recording
+    result = asr({"sampling_rate": 44100, "raw": myrecording})
+    print(result['text'])
+
+
+def test_asr_transcription(self):
+    # Path to the audio file
+    audio_file_path = "flagged\\audio\\94ae87d71192c216800c\\audio.wav"
+
+    # Load the audio file using pydub
+    audio = AudioSegment.from_file(audio_file_path, format="wav")
+
+    # Convert the audio to numpy array
+    audio_array = np.array(audio.get_array_of_samples())
+    # audio_array = audio[:, 0]
+    audio_array = audio_array.astype(np.float32)
+    audio_array /= np.max(np.abs(audio_array))
+
+    # Perform ASR on the audio
+    result = asr({"sampling_rate": audio.frame_rate, "raw": audio_array})
+
+    expected_transcription = "Sample audio file"
+
+    # Add assertions based on the expected result
+    self.assertTrue('text' in result, "ASR result should contain 'text'")
+    # self.assertIsInstance(result['text'], str, "ASR result text should be a string")
+    self.assertEqual(result['text'], expected_transcription, "Transcription should match expected value")
+
+
+def real_time():
+    q = []
+    sampling_rate = 48000
+
+    # Define the callback function to be called when new audio data is available
+    def callback(indata, frames, time, status):
+        q.append(indata)
+
+    # Define the size of the window for the sliding window approach
+    window_size = sampling_rate * 5  # 5 seconds
+
+    # Initialize audio_data as an empty array
+    audio_data = np.array([])
+    vad = webrtcvad.Vad(2)
+
+    window_duration = 0.03  # duration in seconds
+    samples_per_window = int(window_duration * sampling_rate + 0.5)
+    bytes_per_sample = 2
+
+    # Start the audio stream
+    with sd.InputStream(callback=callback):
+        while True:
+            # Get the next chunk of audio data
+            if not q:
+                continue
+            audio_chunk = q.pop(0)[:, 0]
+            audio_chunk = np.ascontiguousarray(audio_chunk)
+
+            # Append the new audio data to the existing audio data
+            # if vad.is_speech(buf=audio_chunk, sample_rate=sampling_rate):
+
+            segments = []
+
+            import struct
+            raw_samples = struct.pack("%dh" % len(audio_data), *audio_data)
+
+            for start in np.arange(0, len(audio_chunk), samples_per_window):
+                stop = min(start + samples_per_window, len(audio_chunk))
+
+                is_speech = vad.is_speech(raw_samples[start * bytes_per_sample: stop * bytes_per_sample],
+                                          sample_rate=sampling_rate)
+
+                segments.append(dict(
+                    start=start,
+                    stop=stop,
+                    is_speech=is_speech))
+
+            audio_data = np.concatenate((audio_data, audio_chunk), axis=0)
+
+            # If the window is full, perform ASR on the window of audio data
+            if len(audio_data) >= window_size:
+                # Extract the window of audio data
+                window_of_audio_data = audio_data[:window_size]
+
+                # Perform ASR on the window of audio data
+                result = asr({"sampling_rate": sampling_rate, "raw": window_of_audio_data})
+                print(result['text'])
+
+                # Slide the window along the incoming audio data
+                audio_data = audio_data[len(window_of_audio_data):]
+            # else:
+            #     print('No audio is being detected')
+
+
+if __name__ == '__main__':
+    asr = pipeline("automatic-speech-recognition")
+    # with_gradio()
+    # segments()
+    real_time()
+    #test_asr_transcription(unittest.TestCase)
